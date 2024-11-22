@@ -1,0 +1,25 @@
+{
+    "output_dir": "extracted_faces",
+    "max_faces": 30,
+    "images_per_face": 30,
+    "min_face_size": 40,
+    "min_confidence": 0.95,
+    "min_quality": 0.6,
+    "batch_size": 4,
+    "fps": 1.0,
+    "use_gpu": true,
+    "gpu_memory_fraction": 0.7,
+    "face_similarity_threshold": 0.6,
+    "skip_existing": true,
+    "save_metadata": true,
+    "quality_metrics": {
+        "blur_threshold": 100,
+        "brightness_range": [0.2, 0.8],
+        "min_face_angle": 30,
+        "min_eye_openness": 0.3
+    },
+    "logging": {
+        "level": "INFO",
+        "show_progress": true
+    }
+}
