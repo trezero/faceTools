@@ -15,6 +15,7 @@ import time
 import psutil
 from contextlib import contextmanager
 import logging
+import shutil
 
 class Config:
     """Configuration class to hold all settings"""
@@ -332,9 +333,52 @@ def should_process_directory(dir_path: Path) -> bool:
         and not name in {'__pycache__', '$RECYCLE.BIN', 'System Volume Information'}
     )
 
-def process_directory(directory_path: str, debug: bool = False) -> None:
+def setup_destination_structure(source_dir: Path, dest_dir: Path) -> None:
+    """
+    Create a mirror of the source directory structure in the destination directory.
+    Only creates directories, doesn't copy any files.
+    """
+    # Create the destination root if it doesn't exist
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Walk through source directory and recreate structure
+    for dir_path in source_dir.glob('**/'):
+        if should_process_directory(dir_path):
+            # Calculate relative path from source root
+            rel_path = dir_path.relative_to(source_dir)
+            # Create same directory in destination
+            (dest_dir / rel_path).mkdir(parents=True, exist_ok=True)
+
+def move_low_quality_image(image_path: Path, source_root: Path, dest_root: Path) -> None:
+    """
+    Move an image to the corresponding directory in the destination structure.
+    Maintains the same relative path structure as the source.
+    """
+    # Calculate relative path from source root
+    rel_path = image_path.relative_to(source_root)
+    # Construct destination path
+    dest_path = dest_root / rel_path
+    
+    # Ensure destination directory exists
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Move the file
+    try:
+        shutil.move(str(image_path), str(dest_path))
+        logging.info(f"Moved low-quality image: {rel_path}")
+    except Exception as e:
+        logging.error(f"Error moving file {image_path}: {str(e)}")
+
+def process_directory(directory_path: str, debug: bool = False, move_threshold: float = None, dest_dir: str = None) -> None:
     """Process a directory containing person-specific subdirectories with face images."""
     directory_path = Path(directory_path)
+    
+    # Setup move functionality if specified
+    if move_threshold is not None and dest_dir is not None:
+        dest_dir = Path(dest_dir)
+        setup_destination_structure(directory_path, dest_dir)
+        logging.info(f"Created directory structure in {dest_dir}")
+        logging.info(f"Will move images with score below {move_threshold} to {dest_dir}")
     
     # Create output directory if it doesn't exist
     output_dir = Path(config.OUTPUT_DIR)
@@ -402,12 +446,17 @@ def process_directory(directory_path: str, debug: bool = False) -> None:
                                     'Processing_Time_Sec': f"{processing_time:.2f}"
                                 })
                                 
+                                # Move image if score is below threshold
+                                if move_threshold is not None and dest_dir is not None:
+                                    score = float(result.get('Score', 0))
+                                    if score < move_threshold:
+                                        move_low_quality_image(image_path, directory_path, dest_dir)
+                                
                                 writer.writerow(result)
                                 csvfile.flush()  # Ensure data is written immediately
                                 
                         except TimeoutError:
-                            logging.error(f"Timeout processing image: {image_path}")
-                            writer.writerow({
+                            error_result = {
                                 'Person': person_name,
                                 'Image': image_path.name,
                                 'Quality': 'Error',
@@ -417,10 +466,15 @@ def process_directory(directory_path: str, debug: bool = False) -> None:
                                 'Height': 0,
                                 'File_Size_KB': 0,
                                 'Processing_Time_Sec': config.TIMEOUT_SECONDS
-                            })
+                            }
+                            writer.writerow(error_result)
+                            
+                            # Move error images if threshold is set
+                            if move_threshold is not None and dest_dir is not None:
+                                move_low_quality_image(image_path, directory_path, dest_dir)
+                                
                         except Exception as e:
-                            logging.error(f"Error processing image {image_path}: {str(e)}")
-                            writer.writerow({
+                            error_result = {
                                 'Person': person_name,
                                 'Image': image_path.name,
                                 'Quality': 'Error',
@@ -430,7 +484,12 @@ def process_directory(directory_path: str, debug: bool = False) -> None:
                                 'Height': 0,
                                 'File_Size_KB': 0,
                                 'Processing_Time_Sec': 0
-                            })
+                            }
+                            writer.writerow(error_result)
+                            
+                            # Move error images if threshold is set
+                            if move_threshold is not None and dest_dir is not None:
+                                move_low_quality_image(image_path, directory_path, dest_dir)
                 
                 except Exception as batch_error:
                     logging.error(f"Error processing batch: {str(batch_error)}")
@@ -443,6 +502,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process face images for quality assessment.')
     parser.add_argument('directory', type=str, help='Directory containing person-specific subdirectories with face images')
     parser.add_argument('--debug', action='store_true', help='Process only one image per person and show detailed output')
+    parser.add_argument('--move', nargs=2, metavar=('THRESHOLD', 'DESTINATION'),
+                      help='Move images below THRESHOLD score to DESTINATION directory')
+
     args = parser.parse_args()
 
     # Configure logging
@@ -452,7 +514,9 @@ if __name__ == "__main__":
     )
 
     try:
-        process_directory(args.directory, args.debug)
+        move_threshold = float(args.move[0]) if args.move else None
+        dest_dir = args.move[1] if args.move else None
+        process_directory(args.directory, args.debug, move_threshold, dest_dir)
     except Exception as e:
         logging.error(f"Fatal error: {str(e)}")
         sys.exit(1)
